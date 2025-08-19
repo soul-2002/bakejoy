@@ -1,0 +1,151 @@
+@action(detail=True, methods=['post'], url_path='pay')
+def pay(self, request, pk=None):
+    order = self.get_object()
+
+    # ۱. آماده‌سازی اطلاعات
+    amount_rial = int(order.total_price * 10)
+    callback_url = request.build_absolute_uri(reverse('payment_callback'))
+
+    # ۲. ایجاد تراکنش اولیه
+    transaction = Transaction.objects.create(
+        order=order,
+        amount=amount_rial,
+        status=Transaction.TransactionStatusChoices.PENDING
+    )
+
+    # ۳. ارسال درخواست به زرین‌پال
+    payload = { "amount": amount_rial, "callback_url": callback_url, ... }
+    response = requests.post(settings.ZARINPAL_REQUEST_URL, json=payload)
+
+    # ۴. پردازش پاسخ و ارسال لینک به فرانت‌اند
+    if response_is_successful:
+        authority = ...
+        payment_url = settings.ZARINPAL_STARTPAY_URL + authority
+        transaction.gateway_reference_id = authority
+        transaction.save()
+        return Response({"payment_url": payment_url})
+
+    return Response(...)
+
+
+
+
+
+
+
+
+
+def zarinpal_payment_callback(request):
+    authority = request.GET.get('Authority')
+    status = request.GET.get('Status')
+
+    try:
+        transaction = Transaction.objects.get(gateway_reference_id=authority)
+        order = transaction.order
+    except Transaction.DoesNotExist:
+        return redirect("frontend-failure-url")
+
+    if status == 'OK':
+        # is_verified, ref_id = verify_zarinpal_payment(...)
+
+        if is_verified:
+            transaction.status = Transaction.TransactionStatusChoices.SUCCESS
+            transaction.save()
+
+            # فراخوانی متد مرکزی برای تغییر وضعیت و ارسال پیامک
+            order.change_status(
+                new_status=Order.OrderStatusChoices.PROCESSING,
+                notes="پرداخت با موفقیت تایید شد."
+            )
+            return redirect("frontend-success-url")
+
+    # مدیریت پرداخت ناموفق
+    order.change_status(
+        new_status=Order.OrderStatusChoices.PAYMENT_FAILED,
+        notes=f"پرداخت ناموفق بود. وضعیت بازگشتی: {status}"
+    )
+    return redirect("frontend-failure-url")
+
+
+
+
+
+
+
+
+
+
+def format_sms_message(template_string: str, order: Order) -> str:
+    customer_name = order.user.get_full_name() or order.user.username
+    mapping = {
+        'customer_name': customer_name,
+        'order_id': str(order.id),
+        'order_total': str(int(order.total_price)),
+        'store_name': settings.SITE_NAME,
+        'tracking_number': str(order.tracking_code) if order.tracking_code else "ثبت نشده",
+    }
+    
+    message = template_string
+    for key, value in mapping.items():
+        message = message.replace(f"{{{{{key}}}}}", value)
+    return message
+
+
+
+
+
+
+
+
+class Order(models.Model):
+    # ...
+    def change_status(self, new_status: str, changed_by=None, notes: str = ""):
+        if new_status == self.status:
+            return
+
+        # گام اول: ثبت لاگ دقیق تغییر وضعیت
+        OrderStatusLog.objects.create(
+            order=self,
+            new_status=new_status,
+            changed_by=changed_by,
+            notes=notes
+        )
+
+        # گام دوم: تغییر و ذخیره وضعیت سفارش
+        self.status = new_status
+        self.save(update_fields=['status'])
+
+        # گام سوم: فراخوانی سرویس ارسال پیامک
+        try:
+            from .sms_service import send_order_status_sms
+            send_order_status_sms(self, self.status)
+        except Exception as e:
+            # لاگ کردن خطای ارسال پیامک بدون متوقف کردن فرآیند
+            print(f"CRITICAL: Failed to send SMS for order #{self.id}. Error: {e}")
+
+
+class Order(models.Model):
+    # ...
+    def change_status(self, new_status: str, changed_by=None, notes: str = ""):
+        if new_status == self.status:
+            return
+
+        # گام اول: ثبت لاگ دقیق تغییر وضعیت
+        OrderStatusLog.objects.create(
+            order=self,
+            new_status=new_status,
+            changed_by=changed_by,
+            notes=notes
+        )
+
+        # گام دوم: تغییر و ذخیره وضعیت سفارش
+        self.status = new_status
+        self.save(update_fields=['status'])
+
+        # گام سوم: فراخوانی سرویس ارسال پیامک
+        try:
+            from .sms_service import send_order_status_sms
+            send_order_status_sms(self, self.status)
+        except Exception as e:
+            # لاگ کردن خطای ارسال پیامک بدون متوقف کردن فرآیند
+            print(f"CRITICAL: Failed to send SMS for order #{self.id}. Error: {e}")

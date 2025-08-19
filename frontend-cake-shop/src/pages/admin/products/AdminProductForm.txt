@@ -1,0 +1,575 @@
+// src/pages/admin/products/AdminProductFormPage.tsx
+
+// --- تمام ایمپورت‌های لازم ---
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useParams, Link as RouterLink } from 'react-router-dom';
+import { useForm, SubmitHandler, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import * as z from 'zod';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import {
+  faSave, faTimes, faSpinner, faPlus, faFileExport, faArrowRight,
+  faInfoCircle, faImage, faDollarSign, faTasks, faCog, faSearch, faCheck  // آیکون‌های نمونه برای تب‌ها
+} from '@fortawesome/free-solid-svg-icons';
+
+// --- کامپوننت‌های فرزند ---
+import AdminPageLayout from '../../../components/admin/layout/AdminPageLayout';
+import ProductGeneralInfoSection from '../../../components/admin/products/form/ProductGeneralInfoSection';
+import ProductImagesSection from '../../../components/admin/products/form/ProductImagesSection';
+import ProductPricingSection from '../../../components/admin/products/form/ProductPricingSection';
+import ProductOptionsSection from '../../../components/admin/products/form/ProductOptionsSection';
+import ProductAdditionalInfoSection from '../../../components/admin/products/form/ProductAdditionalInfoSection'; // ایمپورت جدید
+import ProductSeoSection from '../../../components/admin/products/form/ProductSeoSection'; // ایمپورت جدید
+// کامپوننت‌های زیر باید ایجاد شوند:
+
+
+// --- توابع و تایپ‌های API ---
+import { useAuth } from '../../../contexts/AuthContext';
+import {
+  createAdminProduct, getAdminProductDetail, updateAdminProduct,
+  getAdminCategories, getAdminFlavors, getAdminSizes,
+  // getAdminAddons, // اگر دارید
+} from '../../../services/api';
+import {
+  Product, PaginatedResponse,
+  Category as ProductCategoryType, Flavor, Size, Addon,
+  // ProductFormValues, // این را از Zod schema می‌گیریم
+  NewProductFormData, UpdateProductFormData // تایپ‌های خاص برای ارسال به API
+} from '../../../types';
+
+
+// --- Zod Schema (کامل شده از پاسخ‌های قبلی) ---
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const fileListSchema = z.instanceof(FileList).optional().nullable();
+const stringToPositiveNumberOptional = (errorMessage: string = "مقدار باید عدد مثبت باشد.") =>
+  z.string().optional().nullable().transform(val => val && val.trim() !== '' ? parseFloat(val.replace(/,/g, '.')) : null)
+    .pipe(z.number({ invalid_type_error: errorMessage }).positive(errorMessage).optional().nullable());
+
+const stringToPositiveNumberRequired = (requiredMsg: string, typeErrorMsg: string, positiveMsg: string) =>
+  z.string({ required_error: requiredMsg, invalid_type_error: typeErrorMsg })
+    .min(1, requiredMsg)
+    .transform(val => parseFloat(val.replace(/,/g, '')))
+    .pipe(z.number({ invalid_type_error: typeErrorMsg }).positive(positiveMsg));
+
+const stringToIntegerOptional = (errorMessage: string = "مقدار باید عدد صحیح باشد.") =>
+  z.string().optional().nullable().transform(val => val && val.trim() !== '' ? parseInt(val, 10) : null)
+    .pipe(z.number({ invalid_type_error: errorMessage }).int(errorMessage).min(0, "مقدار نمی‌تواند منفی باشد.").optional().nullable());
+const productFormSchema = z.object({
+  name: z.string().min(3, "نام محصول حداقل باید ۳ کاراکتر باشد.").max(200, "نام محصول بیش از ۲۰۰ کاراکتر نباشد."),
+  slug: z.string().min(3, "اسلاگ الزامی است و حداقل ۳ کاراکتر.").max(220, "اسلاگ بیش از ۲۲۰ کاراکتر نباشد.")
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "فرمت اسلاگ: حروف کوچک انگلیسی، اعداد و خط تیره."),
+  is_active: z.boolean().default(true),
+  category_ids: z.array(z.number())
+    .min(1, "حداقل یک دسته‌بندی باید انتخاب شود.").default([]),
+  short_description: z.string().max(500, "توضیحات کوتاه بیش از ۵۰۰ کاراکتر نباشد.").optional().nullable(),
+  full_description: z.string().optional().nullable(),
+
+  main_image: fileListSchema // اعتبارسنجی refine ها از قبل خوب بود
+    .refine(files => !files || files.length === 0 || (files?.[0]?.size <= MAX_FILE_SIZE_BYTES), `حجم تصویر اصلی: حداکثر ${MAX_FILE_SIZE_MB}MB.`)
+    .refine(files => !files || files.length === 0 || (files?.[0]?.type && ACCEPTED_IMAGE_TYPES.includes(files[0].type)), `فرمت تصویر اصلی نامعتبر.`),
+
+  gallery_images: fileListSchema // این FileList است
+    .refine(files => !files || files.length === 0 || files.length <= 5, "حداکثر ۵ تصویر برای گالری مجاز است.") // اگر فایل‌ها وجود دارند، تعدادشان باید <= 5 باشد
+    .refine(files => { // اعتبارسنجی حجم برای هر فایل در گالری
+      if (!files || files.length === 0) return true; // اگر فایلی نیست یا انتخاب نشده، معتبر است
+      for (let i = 0; i < files.length; i++) {
+        if (files[i].size > MAX_FILE_SIZE_BYTES) {
+          // console.error(`File ${files[i].name} size exceeds limit: ${files[i].size}`);
+          return false; // اگر حتی یک فایل حجمش زیاد بود، کل اعتبارسنجی ناموفق است
+        }
+      }
+      return true;
+    }, `حجم هر تصویر گالری باید کمتر از ${MAX_FILE_SIZE_MB} مگابایت باشد.`)
+    .refine(files => { // اعتبارسنجی نوع برای هر فایل در گالری
+      if (!files || files.length === 0) return true; // اگر فایلی نیست یا انتخاب نشده، معتبر است
+      for (let i = 0; i < files.length; i++) {
+        if (!files[i].type || !ACCEPTED_IMAGE_TYPES.includes(files[i].type)) {
+          // console.error(`File ${files[i].name} type is invalid: ${files[i].type}`);
+          return false; // اگر حتی یک فایل نوعش نامعتبر بود، کل اعتبارسنجی ناموفق است
+        }
+      }
+      return true;
+    }, `فرمت تصاویر گالری نامعتبر است. (فرمت‌های مجاز: ${ACCEPTED_IMAGE_TYPES.join(', ')})`),
+
+  base_price: stringToPositiveNumberRequired("قیمت پایه الزامی است.", "قیمت پایه باید عدد باشد.", "قیمت پایه باید مثبت باشد."),
+  price_type: z.enum(['FIXED', 'PER_KG', 'PER_SERVING']).default('FIXED'),
+  sale_price: stringToPositiveNumberOptional("قیمت تخفیف باید عدد مثبت باشد.").nullable(),
+
+  schedule_sale_enabled: z.boolean().optional().default(false),
+  sale_start_date: z.date({ invalid_type_error: "تاریخ شروع نامعتبر است." }).optional().nullable(),
+  sale_end_date: z.date({ invalid_type_error: "تاریخ پایان نامعتبر است." }).optional().nullable(),
+
+  available_flavor_ids: z.array(z.number()).optional().default([]),
+  available_addon_ids: z.array(z.number()).optional().default([]),
+
+  size_variants: z.array(z.object({
+    id: z.number().optional(), // برای ویرایش رکوردهای موجود
+    size: z.number({ required_error: "انتخاب اندازه الزامی است." }), // این باید ID از مدل Size باشد
+    price_modifier: stringToPositiveNumberOptional("تعدیل‌کننده قیمت باید عدد باشد.").transform(val => val === null ? 0.00 : val).nullable(), // اگر خالی بود صفر در نظر بگیر
+    estimated_weight_kg_override: stringToPositiveNumberOptional("وزن باید عدد مثبت باشد.").nullable(),
+    sku_variant: z.string().max(50).optional().nullable(),
+    stock_quantity: stringToIntegerOptional("موجودی باید عدد صحیح باشد.").nullable(),
+    is_active_for_product: z.boolean().default(true),
+  })
+  ).optional().default([])
+    .refine(variants => { // بررسی یکتایی size در size_variants
+      if (!variants || variants.length === 0) return true;
+      const sizeIds = variants.map(v => v.size);
+      return new Set(sizeIds).size === sizeIds.length;
+    }, { message: "هر اندازه فقط یک بار می‌تواند برای محصول با مشخصات قیمت متفاوت تعریف شود." }),
+
+  tags: z.array(z.string().min(1).max(50)).optional().default([]), // فیلد برچسب‌ها
+
+  ingredients: z.string().optional().nullable(),
+  nutrition_info: z.string().optional().nullable(),
+  allergen_info: z.string().optional().nullable(),
+  meta_title: z.string().max(70, "عنوان سئو بیش از ۷۰ کاراکتر نباشد.").optional().nullable(),
+  meta_description: z.string().max(160, "توضیحات سئو بیش از ۱۶۰ کاراکتر نباشد.").optional().nullable(),
+  meta_keywords: z.string().optional().nullable(),
+})
+  .refine(data => !data.sale_price || (data.base_price !== undefined && data.base_price > data.sale_price), {
+    message: "قیمت تخفیف باید کمتر از قیمت پایه باشد.", path: ["sale_price"],
+  })
+  .refine(data => !data.schedule_sale_enabled || (data.sale_start_date && data.sale_end_date && data.sale_start_date < data.sale_end_date) || (!data.sale_start_date && !data.sale_end_date), {
+    message: "تاریخ پایان تخفیف باید بعد از تاریخ شروع باشد.", path: ["sale_end_date"],
+  });
+
+export type ProductFormValues = z.infer<typeof productFormSchema>;
+
+// تعریف تب‌ها
+const TABS = [
+  { id: 'general', label: 'اطلاعات اصلی', icon: faInfoCircle },
+  { id: 'images', label: 'تصاویر', icon: faImage },
+  { id: 'pricing', label: 'قیمت‌گذاری', icon: faDollarSign },
+  { id: 'options', label: 'گزینه‌ها', icon: faTasks },
+  { id: 'additional-info', label: 'اطلاعات تکمیلی', icon: faPlus }, // آیکون مناسب‌تر انتخاب کنید
+  { id: 'seo', label: 'سئو', icon: faSearch }, // یا faCog
+];
+
+
+const AdminProductFormPage: React.FC = () => {
+  const { productId } = useParams<{ productId?: string }>();
+  const isEditMode = Boolean(productId);
+  const navigate = useNavigate();
+  const { accessToken } = useAuth();
+
+  const [activeTab, setActiveTab] = useState<string>(TABS[0].id);
+  const [pageLoading, setPageLoading] = useState(isEditMode);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const [allCategories, setAllCategories] = useState<ProductCategoryType[]>([]);
+  const [allFlavors, setAllFlavors] = useState<Flavor[]>([]);
+  const [allSizesList, setAllSizesList] = useState<Size[]>([]);
+  const [allAddons, setAllAddons] = useState<Addon[]>([]);
+
+  const [ImagePreview, setImagePreview] = useState<string | null>(null);
+
+  const [currentMainImageUrlFromAPI, setCurrentMainImageUrlFromAPI] = useState<string | null>(null);
+
+  // State برای پیش‌نمایش تصویر اصلی که توسط کاربر انتخاب شده
+  const [mainImageFilePreview, setMainImageFilePreview] = useState<string | null>(null);
+  // State برای URL تصویر اصلی موجود (از API در حالت ویرایش)
+
+  // State برای پیش‌نمایش تصاویر گالری که کاربر جدیداً انتخاب کرده
+  const [galleryFilePreviews, setGalleryFilePreviews] = useState<{ file: File, previewUrl: string }[]>([]);
+  // State برای URL تصاویر گالری موجود (از API در حالت ویرایش)
+  const [currentGalleryImageUrlsFromAPI, setCurrentGalleryImageUrlsFromAPI] = useState<{ id: number, url: string }[]>([]);
+  // State برای نگهداری ID تصاویر گالری که باید از سرور حذف شوند
+  const [galleryImageIdsToRemove, setGalleryImageIdsToRemove] = useState<number[]>([]);
+
+  const formMethods = useForm<ProductFormValues>({
+    resolver: zodResolver(productFormSchema),
+    // defaultValues در useEffect پس از واکشی اطلاعات اولیه ست می‌شوند
+  });
+  const { reset, handleSubmit, control, formState: { errors, isSubmitting }, watch, setValue, getValues, trigger } = formMethods;
+
+  // واکشی داده‌های اولیه برای select ها
+  useEffect(() => {
+    if (!accessToken) return;
+    const fetchData = async () => {
+      setPageLoading(true); // شروع لودینگ کلی
+      try {
+        const [catRes, flavRes, sizeRes /*, addonRes*/] = await Promise.all([
+          getAdminCategories(accessToken, { limit: 500 }), // حد بالا برای گرفتن همه
+          getAdminFlavors(accessToken, { limit: 500 }),
+          getAdminSizes(accessToken, { limit: 500 }),
+          // getAdminAddons(accessToken, {limit: 500}), // اگر دارید
+        ]);
+        setAllCategories(Array.isArray(catRes) ? catRes : catRes?.results || []);
+        setAllFlavors(Array.isArray(flavRes) ? flavRes : flavRes?.results || []);
+        setAllSizesList(Array.isArray(sizeRes) ? sizeRes : sizeRes?.results || []);
+        // setAllAddons(Array.isArray(addonRes) ? addonRes : addonRes?.results || []);
+      } catch (error) {
+        console.error("Failed to fetch initial form data (categories, flavors, sizes):", error);
+        setFormError("خطا در دریافت داده‌های اولیه فرم (دسته‌بندی‌ها، طعم‌ها یا اندازه‌ها).");
+      } finally {
+        if (!isEditMode) setPageLoading(false); // اگر حالت افزودن است، لودینگ را اینجا تمام کن
+      }
+    };
+    fetchData();
+  }, [accessToken, isEditMode]); // isEditMode اضافه شد تا فقط یکبار در افزودن اجرا شود
+  // تابع واکشی و مقداردهی فرم در حالت ویرایش
+  const fetchProductForEdit = useCallback(async () => {
+    if (isEditMode && productId && accessToken) {
+      setPageLoading(true); // لودینگ برای واکشی جزئیات محصول
+      setFormError(null);
+      try {
+        const product = await getAdminProductDetail(productId, accessToken);
+        const defaultValues: Partial<ProductFormValues> = {
+          name: product.name,
+          slug: product.slug,
+          is_active: product.is_active,
+          category_ids: product.category?.map(cat => typeof cat === 'number' ? cat : cat.id).filter(id => id != null) as number[] || [],
+          short_description: product.short_description || '',
+          full_description: product.description || '',
+          base_price: product.base_price,
+          price_type: product.price_type || 'FIXED',
+          sale_price: product.sale_price,
+          schedule_sale_enabled: !!(product.sale_start_date || product.sale_end_date),
+          sale_start_date: product.sale_start_date ? new Date(product.sale_start_date) : null,
+          sale_end_date: product.sale_end_date ? new Date(product.sale_end_date) : null,
+          available_flavor_ids: product.available_flavors?.map(f => typeof f === 'number' ? f : f.id).filter(id => id != null) as number[] || [],
+          available_addon_ids: product.available_addons?.map(a => typeof a === 'number' ? a : a.id).filter(id => id != null) as number[] || [],
+          size_variants: product.size_variants?.map(sv => ({
+            id: sv.id,
+            size: typeof sv.size === 'object' && sv.size !== null ? sv.size.id : (typeof sv.size === 'number' ? sv.size : 0), // پیش‌فرض 0 اگر undefined
+            price_modifier: sv.price_modifier !== null && sv.price_modifier !== undefined ? String(sv.price_modifier) : '',
+            estimated_weight_kg_override: sv.estimated_weight_kg_override !== null && sv.estimated_weight_kg_override !== undefined ? String(sv.estimated_weight_kg_override) : '',
+            stock_quantity: sv.stock_quantity !== null && sv.stock_quantity !== undefined ? String(sv.stock_quantity) : '',
+            sku_variant: sv.sku_variant || '',
+            is_active_for_product: sv.is_active_for_product === undefined ? true : sv.is_active_for_product,
+          })) || [],
+          tags: product.tags || [],
+          ingredients: product.ingredients_text || '',
+          nutrition_info: product.nutrition_info_text || '',
+          allergen_info: product.allergen_info_text || '',
+          meta_title: product.meta_title || '',
+          meta_description: product.meta_description || '',
+          meta_keywords: product.meta_keywords || '',
+        };
+        reset(defaultValues);
+
+        if (product.image) {
+          setCurrentMainImageUrlFromAPI(product.image);
+          setMainImageFilePreview(product.image); // پیش‌نمایش اولیه
+        } else {
+          setCurrentMainImageUrlFromAPI(null);
+          setMainImageFilePreview(null);
+        }
+        if (product.gallery && Array.isArray(product.gallery)) {
+          setCurrentGalleryImageUrlsFromAPI(product.gallery.map(img => ({ url: img.image, id: img.id })));
+        } else {
+          setCurrentGalleryImageUrlsFromAPI([]);
+        }
+        setGalleryFilePreviews([]); // پاک کردن پیش‌نمایش فایل‌های جدید گالری
+
+      } catch (err: any) {
+        setFormError("خطا در دریافت اطلاعات محصول برای ویرایش: " + (err.detail || err.message || ''));
+      } finally {
+        setPageLoading(false);
+      }
+    }
+  }, [productId, isEditMode, accessToken, reset, setCurrentMainImageUrlFromAPI, setCurrentGalleryImageUrlsFromAPI, setMainImageFilePreview, setGalleryFilePreviews, setPageLoading, setFormError]);
+  // واکشی اطلاعات محصول در حالت ویرایش (پس از لود شدن داده‌های اولیه)
+  useEffect(() => {
+    if (isEditMode && productId && accessToken && (allCategories.length > 0 || !productId)) { // یا شرط دیگری برای اطمینان از لود شدن selects
+      setPageLoading(true);
+      getAdminProductDetail(productId, accessToken)
+        .then(product => {
+          const defaultVals: Partial<ProductFormValues> = { /* ... (کد defaultValues شما از قبل) ... */
+            name: product.name,
+            slug: product.slug,
+            is_active: product.is_active,
+            category_ids: product.categories?.map(cat => typeof cat === 'number' ? cat : cat.id) || [],
+            short_description: product.short_description || '',
+            full_description: product.full_description || '',
+            base_price: product.base_price,
+            price_type: product.price_type || 'FIXED',
+            sale_price: product.sale_price,
+            schedule_sale_enabled: !!(product.sale_start_date || product.sale_end_date),
+            sale_start_date: product.sale_start_date ? new Date(product.sale_start_date) : null,
+            sale_end_date: product.sale_end_date ? new Date(product.sale_end_date) : null,
+            available_flavor_ids: product.available_flavors?.map(f => typeof f === 'number' ? f : f.id) || [],
+            available_addon_ids: product.available_addons?.map(a => typeof a === 'number' ? a : a.id) || [],
+            size_variants: product.size_variants?.map(sv => ({
+              ...sv, // شامل id احتمالی خود size_variant
+              size: typeof sv.size === 'object' && sv.size !== null ? sv.size.id : (typeof sv.size === 'number' ? sv.size : undefined),
+              // اطمینان از اینکه مقادیر رشته‌ای به فرم ارسال می‌شوند اگر input ها text هستند
+              price_modifier: sv.price_modifier !== null && sv.price_modifier !== undefined ? String(sv.price_modifier) : '',
+              estimated_weight_kg_override: sv.estimated_weight_kg_override !== null && sv.estimated_weight_kg_override !== undefined ? String(sv.estimated_weight_kg_override) : '',
+              stock_quantity: sv.stock_quantity !== null && sv.stock_quantity !== undefined ? String(sv.stock_quantity) : '',
+            })) || [],
+            ingredients: product.ingredients || '',
+            nutrition_info: product.nutrition_info || '',
+            allergen_info: product.allergen_info || '',
+            meta_title: product.meta_title || '',
+            meta_description: product.meta_description || '',
+            meta_keywords: product.meta_keywords || '',
+            // main_image و gallery_images را مستقیم به reset پاس نمی‌دهیم
+          };
+          reset(defaultVals);
+          if (product.image) setCurrentMainImageUrlFromAPI(product.image);
+          if (product.gallery) setCurrentGalleryImageUrlsFromAPI(product.gallery.map(img => ({ url: img.image, id: img.id })));
+        })
+        .catch(err => setFormError("خطا در دریافت اطلاعات محصول برای ویرایش: " + (err.message || '')))
+        .finally(() => setPageLoading(false));
+    } else if (!isEditMode && !pageLoading) { // اطمینان از اینکه pageLoading در حالت افزودن false است
+      reset({ // مقادیر پیش‌فرض برای حالت افزودن
+        name: '', slug: '', is_active: true, category_ids: [],
+        base_price: undefined, price_type: 'FIXED', sale_price: null,
+        schedule_sale_enabled: false, sale_start_date: null, sale_end_date: null,
+        available_flavor_ids: [], available_addon_ids: [], size_variants: [],
+        short_description: '', full_description: '', ingredients: '',
+        nutrition_info: '', allergen_info: '', meta_title: '',
+        meta_description: '', meta_keywords: '',
+        main_image: null, gallery_images: null,
+      });
+    }
+
+  }, [productId, isEditMode, accessToken, reset, allCategories, allFlavors, allSizesList, /*allAddons,*/ setPageLoading, setFormError, setCurrentMainImageUrlFromAPI, setMainImageFilePreview, setCurrentGalleryImageUrlsFromAPI, setGalleryFilePreviews]); // allCategories.length برای اجرای مجدد پس از لود
+
+
+  const onSubmit: SubmitHandler<ProductFormValues> = async (formDataValues) => {
+    console.log("onSubmit - formDataValues.main_image:", formDataValues.main_image);
+    console.log("onSubmit - formDataValues.gallery_images:", formDataValues.gallery_images);
+    if (!accessToken) {
+      setFormError("توکن دسترسی موجود نیست. لطفاً دوباره وارد شوید.");
+      return;
+    }
+    // setLoading(true) توسط isSubmitting از react-hook-form مدیریت می‌شود
+    setFormError(null);
+    setSuccessMessage(null);
+
+    console.log("AdminProductFormPage - onSubmit - Raw formDataValues from react-hook-form:", formDataValues);
+
+    // ۱. استخراج فایل‌ها از formDataValues
+    const mainImageToUpload: File | null =
+      (formDataValues.main_image && formDataValues.main_image.length > 0)
+        ? formDataValues.main_image[0]
+        : null;
+
+    const galleryImagesToUpload: FileList | null = formDataValues.gallery_images || null;
+
+    // ۲. آماده‌سازی آبجکت داده‌های محصول (بدون فایل‌ها) برای ارسال به توابع API
+    // این آبجکت باید با تایپ ورودی توابع API شما (ProductFormData یا UpdateProductFormData) مطابقت داشته باشد.
+    const productPayload: Omit<ProductFormData, 'main_image' | 'gallery_images'> & Partial<Omit<UpdateProductFormData, 'main_image' | 'gallery_images'>> = {
+      name: formDataValues.name,
+      slug: formDataValues.slug, // ارسال اسلاگ
+      is_active: formDataValues.is_active,
+      category_id: formDataValues.category_ids || [],
+      short_description: formDataValues.short_description || null,
+      description: formDataValues.full_description || null,
+
+      base_price: formDataValues.base_price, // Zod باید تبدیل به عدد را انجام داده باشد
+      price_type: formDataValues.price_type,
+      sale_price: formDataValues.sale_price, // Zod باید تبدیل به عدد یا null را انجام داده باشد
+      schedule_sale_enabled: formDataValues.schedule_sale_enabled || false,
+      // تبدیل تاریخ‌ها به فرمت YYYY-MM-DD اگر در Zod به Date تبدیل شده‌اند
+      sale_start_date: formDataValues.sale_start_date ? formDataValues.sale_start_date.toISOString().split('T')[0] : null,
+      sale_end_date: formDataValues.sale_end_date ? formDataValues.sale_end_date.toISOString().split('T')[0] : null,
+
+      available_flavor_ids: formDataValues.available_flavor_ids || [],
+      available_addon_ids: formDataValues.available_addon_ids || [],
+
+      // size_variants باید آرایه‌ای از آبجکت‌ها با ساختار صحیح باشد
+      size_variants: formDataValues.size_variants?.map(sv => ({
+        id: sv.id, // برای آپدیت متغیرهای موجود
+        size: typeof sv.size === 'object' && sv.size !== null ? (sv.size as any).id : sv.size, // اطمینان از ارسال ID
+        price_modifier: sv.price_modifier, // Zod باید تبدیل به عدد یا null را انجام داده باشد
+        estimated_weight_kg_override: sv.estimated_weight_kg_override, // Zod باید تبدیل به عدد یا null را انجام داده باشد
+        sku_variant: sv.sku_variant || null,
+        stock_quantity: sv.stock_quantity, // Zod باید تبدیل به عدد یا null را انجام داده باشد
+        is_active_for_product: sv.is_active_for_product,
+      })) || [],
+
+      ingredients: formDataValues.ingredients || null,
+      nutrition_info: formDataValues.nutrition_info || null,
+      allergen_info: formDataValues.allergen_info || null,
+      meta_title: formDataValues.meta_title || null,
+      meta_description: formDataValues.meta_description || null,
+      meta_keywords: formDataValues.meta_keywords || null,
+    };
+
+    // (برای ویرایش) مدیریت حذف تصویر اصلی
+    // این فیلد باید در تایپ UpdateProductFormData شما تعریف شده باشد
+    if (isEditMode && !mainImageToUpload && currentMainImageUrlFromAPI && watch('main_image') === null) {
+      (productPayload as UpdateProductFormData).remove_main_image = true;
+      console.log("Flagging main_image for removal in payload.");
+    }
+
+    // (برای ویرایش) مدیریت حذف تصاویر گالری
+    // شما نیاز به یک state دارید که ID تصاویر گالری که باید حذف شوند را نگه دارد، مثلاً `galleryImageIdsToRemove: number[]`
+    // این state باید با کلیک روی دکمه حذف هر تصویر گالری موجود آپدیت شود.
+    // const galleryIdsToRemove = /* ... از state بخوانید ... */;
+
+
+    console.log("AdminProductFormPage - onSubmit - Prepared Product Payload:", productPayload);
+    if (mainImageToUpload) { console.log("AdminProductFormPage - onSubmit - Main image to upload:", mainImageToUpload.name); }
+    if (galleryImagesToUpload && galleryImagesToUpload.length > 0) { console.log("AdminProductFormPage - onSubmit - Gallery images to upload count:", galleryImagesToUpload.length); }
+
+
+    try {
+      let responseMessage = '';
+      if (isEditMode && productId) {
+        console.log("AdminProductFormPage - Calling updateAdminProduct for ID:", productId);
+        const updatedProduct = await updateAdminProduct(
+          accessToken,
+          productId,
+          productPayload as UpdateProductFormData, // پاس دادن آبجکت داده‌های متنی
+          mainImageToUpload,                      // پاس دادن فایل تصویر اصلی به صورت جدا
+          galleryImagesToUpload,                  // پاس دادن فایل‌های گالری جدید به صورت جدا
+          // galleryIdsToRemove                   // پاس دادن ID تصاویر گالری برای حذف (اگر پیاده‌سازی کرده‌اید)
+        );
+        responseMessage = `محصول "${updatedProduct.name}" با موفقیت ویرایش شد.`;
+        // به‌روزرسانی state های پیش‌نمایش تصویر بر اساس پاسخ API
+        if (updatedProduct.image) {
+          setCurrentMainImageUrlFromAPI(updatedProduct.image);
+          setImagePreview(updatedProduct.image);
+        } else if ((productPayload as UpdateProductFormData).remove_main_image) {
+          setCurrentMainImageUrlFromAPI(null);
+          setImagePreview(null);
+        }
+        // TODO: به‌روزرسانی currentGalleryImageUrlsFromAPI بر اساس پاسخ و galleryIdsToRemove
+        fetchProductForEdit(); // یا فقط بخش‌هایی از UI را آپدیت کنید
+      } else {
+        console.log("AdminProductFormPage - Calling createAdminProduct.");
+        const newProduct = await createAdminProduct(
+          accessToken,
+          productPayload as ProductFormData, // پاس دادن آبجکت داده‌های متنی
+          mainImageToUpload,                 // پاس دادن فایل تصویر اصلی به صورت جدا
+          galleryImagesToUpload              // پاس دادن فایل‌های گالری به صورت جدا
+        );
+        responseMessage = `محصول "${newProduct.name}" با موفقیت ایجاد شد.`;
+        reset(); // ریست کردن کامل فرم react-hook-form
+        // پاک کردن state های پیش‌نمایش و تصاویر موجود
+        setImagePreview(null);
+        setCurrentMainImageUrlFromAPI(null);
+        setCurrentGalleryImageUrlsFromAPI([]);
+        // پاک کردن مقدار input فایل‌ها (اگر با register مستقیم مدیریت نمی‌شوند)
+        const mainImgInput = document.getElementById('main-image-upload') as HTMLInputElement;
+        if (mainImgInput) mainImgInput.value = '';
+        const galleryImgInput = document.getElementById('gallery-images-upload') as HTMLInputElement;
+        if (galleryImgInput) galleryImgInput.value = '';
+      }
+      setSuccessMessage(responseMessage);
+      setTimeout(() => {
+        setSuccessMessage(null);
+        navigate('/admin/products'); // بازگشت به لیست محصولات
+      }, 2500);
+    } catch (err: any) {
+      console.error("AdminProductFormPage - Error saving product:", err);
+      // بهبود نمایش خطا از پاسخ API (کد شما برای این بخش خوب بود)
+      let detailedError = "خطای ناشناخته در ذخیره‌سازی.";
+      if (err && typeof err === 'object') {
+        if (err.detail) { detailedError = err.detail; }
+        else {
+          const fieldErrors = Object.entries(err)
+            .map(([key, value]) => `${key}: ${(Array.isArray(value) ? value.join(', ') : String(value))}`)
+            .join('; ');
+          if (fieldErrors) detailedError = fieldErrors;
+        }
+      } else if (typeof err === 'string') { detailedError = err; }
+      setFormError(`خطا در ذخیره‌سازی محصول: ${detailedError}`);
+    } finally {
+      // setLoading(false); // isSubmitting از react-hook-form این را مدیریت می‌کند
+    }
+  };
+
+
+  const renderActiveTabContent = () => {
+    switch (activeTab) {
+      case 'general':
+        return <ProductGeneralInfoSection formMethods={formMethods} categories={allCategories} />;
+      case 'images':
+        return <ProductImagesSection formMethods={formMethods} currentMainImageUrl={currentMainImageUrlFromAPI} currentGalleryImageUrls={currentGalleryImageUrlsFromAPI} />;
+      case 'pricing':
+        return <ProductPricingSection formMethods={formMethods} />;
+      case 'options':
+        return <ProductOptionsSection formMethods={formMethods} allFlavors={allFlavors} allSizes={allSizesList} allAddons={allAddons} />;
+      case 'additional-info':
+        return <ProductAdditionalInfoSection formMethods={formMethods} />;
+      case 'seo':
+        return <ProductSeoSection formMethods={formMethods} />;
+      default:
+        return <ProductGeneralInfoSection formMethods={formMethods} categories={allCategories} />;
+    }
+  };
+
+  if (pageLoading && (!isEditMode || (isEditMode && !watch('name')))) { // لودینگ تا زمانی که داده‌های اولیه (حتی برای ویرایش) لود شوند
+    return (
+      <AdminPageLayout pageTitle={isEditMode ? "ویرایش محصول..." : "افزودن محصول جدید"}>
+        <div className="flex justify-center items-center h-96">
+          <FontAwesomeIcon icon={faSpinner} spin size="3x" className="text-amber-500" />
+        </div>
+      </AdminPageLayout>
+    );
+  }
+  // console.log("All sizes fetched for form:", allSizesList); // لاگ در والد
+
+  return (
+    <AdminPageLayout
+      pageTitle={isEditMode ? `ویرایش محصول: ${watch('name') || '...'}` : "افزودن محصول جدید"}
+    >
+      <div className="mb-6 border-b border-gray-200 dark:border-slate-700">
+        <nav className="-mb-px flex space-x-4 rtl:space-x-reverse overflow-x-auto" aria-label="Tabs">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm focus:outline-none
+                ${activeTab === tab.id
+                  ? 'border-amber-500 text-amber-600 dark:border-amber-400 dark:text-amber-300'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:border-slate-600'
+                }`
+              }
+              aria-current={activeTab === tab.id ? 'page' : undefined}
+            >
+              {tab.icon && <FontAwesomeIcon icon={tab.icon} className="ml-2 rtl:mr-2" />}
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      <form onSubmit={handleSubmit(onSubmit)} noValidate>
+        {successMessage && (
+          <div className="mb-4 p-3 bg-green-100 dark:bg-green-700/30 text-green-700 dark:text-green-200 rounded-md text-sm flex items-center">
+            <FontAwesomeIcon icon={faCheck} className="ml-2 rtl:mr-2" /> {successMessage}
+          </div>
+        )}
+        {formError && (
+          <div className="mb-4 p-3 bg-red-100 dark:bg-red-700/30 text-red-700 dark:text-red-300 rounded-md text-sm flex items-center">
+            <FontAwesomeIcon icon={faTimes} className="ml-2 rtl:mr-2" /> {formError}
+          </div>
+        )}
+
+        {renderActiveTabContent()}
+
+        <div className="mt-8 pt-6 border-t border-gray-200 dark:border-slate-700">
+          <div className="flex justify-end space-x-3 rtl:space-x-reverse">
+            <RouterLink
+              to="/admin/products"
+              className="px-4 py-2 border border-gray-300 dark:border-slate-600 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+            >
+              <FontAwesomeIcon icon={faTimes} className="ml-2 rtl:mr-2" />
+              انصراف
+            </RouterLink>
+            <button
+              type="submit"
+              disabled={isSubmitting || pageLoading}
+              className="px-6 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 disabled:opacity-70 flex items-center justify-center transition-colors"
+            >
+              {isSubmitting || pageLoading ? <FontAwesomeIcon icon={faSpinner} spin className="ml-2 rtl:mr-2" /> : <FontAwesomeIcon icon={faSave} className="ml-2 rtl:mr-2" />}
+              {isEditMode ? 'ذخیره تغییرات' : 'ذخیره و انتشار'}
+            </button>
+          </div>
+        </div>
+      </form>
+    </AdminPageLayout>
+  );
+};
+
+export default AdminProductFormPage;

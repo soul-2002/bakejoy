@@ -1,0 +1,24 @@
+/* src/components/admin/orders/OrderNotesSection.module.css */
+.noteTimeline { /* نام کلاس‌ها در CSS Modules به صورت محلی تغییر می‌کند */
+  position: relative;
+  padding-right: 2rem;
+}
+.noteTimeline::before {
+  content: '';
+  position: absolute;
+  right: 7px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: #e5e7eb;
+}
+.noteTimelineDot {
+  position: absolute;
+  right: 0;
+  top: 5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background-color: var(--color-primary); /* استفاده از متغیر CSS شما */
+  border: 2px solid white;
+}

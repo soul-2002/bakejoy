@@ -1,0 +1,371 @@
+{% load humanize %}
+{% load static %}
+{% load humanize %} {# برای فیلتر intcomma - اگر می‌خواهید اعداد را با کاما جدا کنید #}
+
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>فاکتور سفارش {{ shop_name|default:"BAKEJÖY" }} - شماره {{ order.id }}</title>
+    <style>
+        @page {
+            size: A4; /* می‌توانید landscape هم استفاده کنید اگر جدول عریض است */
+            margin: 1.5cm; /* حاشیه مناسب برای چاپ */
+            
+            /* شماره صفحه در فوتر (مثال) */
+            @bottom-right {
+                content: "صفحه " counter(page) " از " counter(pages);
+                font-size: 9pt;
+                color: #6B7280;
+            }
+        }
+
+        body {
+            font-family: 'Vazirmatn', Arial, sans-serif; /* Vazirmatn باید با @font-face تعریف شود */
+            font-size: 10pt;
+            direction: rtl;
+            color: #374151; /* --color-text-main */
+            line-height: 1.6;
+        }
+
+        /* تعریف فونت وزیرمتن */
+        /* مهم: مطمئن شوید فایل فونت Vazirmatn-Regular.ttf (یا نام دقیق فونت شما)
+           در مسیر static/fonts/ شما وجود دارد و STATIC_URL به درستی تنظیم شده.
+           WeasyPrint برای پیدا کردن این فایل به base_url که در ویو به آن می‌دهیم متکی است.
+           یا می‌توانید مسیر کامل فایل را در سرور بدهید: src: url("file:///path/to/your/static/fonts/Vazirmatn-Regular.ttf");
+        */
+        @font-face {
+            font-family: 'Vazirmatn';
+            src: url("{% static 'fonts/Vazirmatn-Regular.ttf' %}"); /* استفاده از تگ static جنگو */
+            /* می‌توانید فرمت‌های دیگر مانند woff2 را هم برای کارایی بهتر اضافه کنید اگر دارید */
+        }
+        
+        .invoice-container {
+            width: 100%;
+        }
+
+        .invoice-header {
+            border-bottom: 2px solid #F59E0B; /* --color-primary */
+            padding-bottom: 1rem; /* pb-4 */
+            margin-bottom: 1.5rem; /* mb-6 */
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+        .invoice-header .company-details { text-align: left; }
+        .invoice-header .order-details { text-align: right; }
+
+        .invoice-title {
+            color: #F59E0B; /* --color-primary */
+            font-size: 1.5rem; /* text-2xl */
+            font-weight: bold;
+            margin-bottom: 0.5rem; /* mb-2 */
+        }
+        
+        .info-section { /* برای اطلاعات مشتری و آدرس */
+            display: flex;
+            flex-wrap: wrap; /* برای شکستن در صفحات کوچک اگر لازم شد */
+            gap: 1.5rem; /* gap-6 */
+            margin-bottom: 2rem; /* mb-8 */
+        }
+
+        .info-box {
+            background-color: #f9fafb; /* gray-50 / کلاس customer-info-box شما */
+            border-right: 3px solid #F59E0B; /* --color-primary */
+            padding: 1rem; /* p-4 */
+            border-radius: 0.5rem; /* rounded-lg */
+            flex: 1; /* باعث می‌شود در یک ردیف فضای مساوی بگیرند */
+            min-width: 280px; /* برای جلوگیری از فشرده شدن بیش از حد */
+        }
+        .info-box h2 {
+            font-weight: bold;
+            font-size: 1.125rem; /* text-lg */
+            margin-bottom: 0.75rem; /* mb-3 */
+            color: #1F2937; /* gray-800 */
+        }
+        .info-box p {
+            margin-bottom: 0.5rem; /* space-y-2 */
+            line-height: 1.5;
+        }
+        .info-box p .label { font-weight: bold; color: #4B5563; /* gray-600 */ }
+        .info-box p .value { color: #374151; /* gray-700 */ }
+
+
+        .items-section {
+            margin-bottom: 2rem; /* mb-8 */
+        }
+        .items-section h2 {
+            font-weight: bold;
+            font-size: 1.125rem; /* text-lg */
+            margin-bottom: 0.75rem; /* mb-3 */
+            color: #1F2937; /* gray-800 */
+        }
+        .items-table { /* برای جدول آیتم‌ها */
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9pt; /* کمی کوچکتر برای جا شدن بهتر */
+        }
+        .items-table th, .items-table td {
+            border: 1px solid #D1D5DB; /* gray-300 */
+            padding: 0.5rem 0.75rem; /* p-2 sm:p-3 */
+            text-align: right;
+            vertical-align: top;
+        }
+        .items-table thead tr {
+            background-color: #f3f4f6; /* gray-100 / کلاس table-header شما */
+        }
+        .items-table tbody tr:nth-child(even) {
+            background-color: #f9fafb; /* gray-50 / کلاس table-row شما */
+        }
+        .items-table .description p { margin: 0 0 0.25rem 0; }
+        .items-table .description .item-name { font-weight: bold; }
+        .items-table .description .item-meta { font-size: 0.8em; color: #6B7280; }
+
+        .financial-summary { /* برای جمع‌بندی قیمت‌ها در جدول آیتم‌ها */
+            margin-top: 0; /* برای چسبیدن به جدول */
+        }
+        .financial-summary td {
+            font-weight: bold;
+        }
+        .financial-summary .label { text-align: right; padding-right: 1rem; }
+        .financial-summary .value { text-align: left; padding-left: 1rem; }
+
+        .grand-total td {
+            background-color: #F59E0B; /* --color-primary */
+            color: white;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        .ltr-text { /* برای نمایش اعداد در سمت چپ */
+            text-align: left !important; 
+            direction: ltr !important;
+        }
+
+        .payment-delivery-section { /* برای اطلاعات پرداخت و تحویل */
+             /* مشابه info-section */
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .payment-delivery-section > div { /* هر کارت در این بخش */
+             /* مشابه info-box */
+            background-color: #f9fafb;
+            border-right: 3px solid #D97706; /* --color-secondary (برای تمایز) */
+            padding: 1rem;
+            border-radius: 0.5rem;
+            flex: 1;
+            min-width: 280px;
+        }
+        .payment-delivery-section h2 {
+            font-weight: bold;
+            font-size: 1.125rem;
+            margin-bottom: 0.75rem;
+            color: #1F2937;
+        }
+        .payment-delivery-section p { margin-bottom: 0.5rem; }
+        .payment-delivery-section .label { font-weight: bold; color: #4B5563; }
+        .payment-delivery-section .value { color: #374151; }
+
+        .notes-section { /* برای یادداشت‌ها */
+            /* مشابه payment-delivery-section */
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .notes-section > .notes-box { /* کلاس notes-box شما */
+            border-right: 3px solid #B45309; /* --color-accent (برای تمایز) */
+            background-color: #f9fafb;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            flex: 1;
+            min-width: 280px;
+        }
+        .notes-section h2 {
+            font-weight: bold;
+            font-size: 1.125rem;
+            margin-bottom: 0.75rem;
+            color: #1F2937;
+        }
+        .notes-section .customer-note, .notes-section .shop-note {
+            background-color: white;
+            padding: 0.5rem; /* p-2 */
+            border-radius: 0.25rem; /* rounded */
+            margin-top: 0.25rem;
+            border: 1px solid #e5e7eb; /* برای دیده شدن بهتر */
+        }
+        .notes-section .label { font-weight: bold; margin-bottom: 0.25rem; display: block;}
+
+
+        .footer {
+            border-top: 1px solid #e5e7eb; /* gray-200 */
+            color: #6B7280; /* --color-text-secondary */
+            text-align: center;
+            padding-top: 1rem;
+            margin-top: 1.5rem;
+            font-size: 0.75rem; /* text-xs */
+        }
+
+    </style>
+</head>
+<body>
+    <div class="invoice-container">
+        <div class="invoice-header">
+            <div class="order-details">
+                <h1 class="invoice-title">فاکتور سفارش {{ shop_name|default:"BAKEJÖY" }}</h1>
+                <p>شماره سفارش: <span class="font-bold">#{{ order.id|stringformat:"04d" }}</span></p>
+                <p>تاریخ صدور: <span>{% now "Y/m/d" %}</span></p>
+                <p>تاریخ ثبت سفارش: <span>{{ order.created_at|date:"Y/m/d - H:i" }}</span></p>
+            </div>
+            <div class="company-details">
+                {% if shop_logo_url %}
+                    <img src="{{ shop_logo_url }}" alt="لوگو" style="max-width: 100px; max-height: 100px; margin-bottom: 10px;">
+                {% else %}
+                    <div class="logo-placeholder" style="width:100px; height:100px; text-align:center; line-height:100px;">لوگو</div>
+                {% endif %}
+                <p class="font-bold text-lg">{{ shop_name|default:"BAKEJÖY" }}</p>
+                <p>{{ shop_address|default_if_none:"-" }}</p>
+                <p>تلفن: {{ shop_phone|default_if_none:"-" }}</p>
+                {% if shop_economic_code %}<p>کد اقتصادی: {{ shop_economic_code }}</p>{% endif %}
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div class="info-box">
+                <h2>اطلاعات خریدار</h2>
+                <p><span class="label">نام کامل:</span> <span class="value">{{ order.user.get_full_name|default:order.user.username|default:"-" }}</span></p>
+                {% if order.user.phone_number %}<p><span class="label">تلفن:</span> <span class="value ltr-text">{{ order.user.phone_number }}</span></p>{% endif %}
+                {% if order.user.email %}<p><span class="label">ایمیل:</span> <span class="value">{{ order.user.email }}</span></p>{% endif %}
+            </div>
+
+            {% if order.address %}
+            <div class="info-box">
+                <h2>آدرس تحویل سفارش</h2>
+                <p><span class="label">تحویل گیرنده:</span> <span class="value">{{ order.address.recipient_name|default:order.user.get_full_name|default:order.user.username }}</span></p>
+                <p><span class="label">آدرس:</span> <span class="value">{{ order.address.street_address|default:"-" }}{% if order.address.city %}, {{ order.address.city }}{% endif %}{% if order.address.province %}, {{ order.address.province }}{% endif %}</span></p>
+                {% if order.address.postal_code %}<p><span class="label">کد پستی:</span> <span class="value ltr-text">{{ order.address.postal_code }}</span></p>{% endif %}
+                {% if order.address.phone_number %}<p><span class="label">تلفن آدرس:</span> <span class="value ltr-text">{{ order.address.phone_number }}</span></p>{% endif %}
+            </div>
+            {% else %}
+            <div class="info-box">
+                <h2>آدرس تحویل سفارش</h2>
+                <p><span class="value">آدرسی برای این سفارش ثبت نشده است.</span></p>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="items-section">
+            <h2>جزئیات سفارش</h2>
+            <div class="table-wrapper">
+                <table class="items-table">
+                    <thead>
+                        <tr class="table-header">
+                            <th>ردیف</th>
+                            <th style="width: 40%;">شرح محصول</th>
+                            <th class="text-center">تعداد</th>
+                            <th class="text-left">قیمت واحد (تومان)</th>
+                            <th class="text-left">مبلغ کل (تومان)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in order.items.all %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td>
+                                <div class="description">
+                                    {# VVVV --- این بخش اصلاح شد --- VVVV #}
+                                    <p class="item-name">{{ item.cake.name|default:"محصول نامشخص" }}</p> 
+                                    {# ^^^^ ------------------------ ^^^^ #}
+                                    <p class="item-meta">
+                                        {% if item.flavor %}طعم: {{ item.flavor.name }} {% endif %}
+                                        {% if item.size %}اندازه: {{ item.size.name }} {% endif %}
+                                    </p>
+                                    {% if item.notes %}<p class="item-meta">یادداشت: {{ item.notes }}</p>{% endif %}
+                                </div>
+                            </td>
+                            <td class="text-center">{{ item.quantity|floatformat:"0"|intcomma:False }}</td>
+                            <td class="text-left ltr-text">{{ item.price_at_order|floatformat:"0"|intcomma:False }}</td>
+                            {# فرض می‌کنیم یک متد برای محاسبه قیمت کل هر آیتم در مدل OrderItem دارید #}
+                            {# یا مستقیماً محاسبه کنید: {% widthratio item.price_at_order 1 item.quantity %} #}
+                            <td class="text-left ltr-text">{{ item.get_total_item_price|floatformat:"0"|intcomma:False }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="text-center">هیچ آیتمی در این سفارش وجود ندارد.</td>
+                        </tr>
+                        {% endfor %}
+                        
+                        {# بخش خلاصه مالی #}
+                        <tr class="financial-summary">
+                            <td class="label" colspan="4">جمع جزء محصولات</td>
+                            <td class="value ltr-text">{{ order.get_subtotal_price|floatformat:"0"|intcomma:False }}</td> {# get_subtotal_price متد در مدل Order #}
+                        </tr>
+                        {% if order.discount_amount > 0 %} {# نمایش فقط اگر تخفیف وجود دارد #}
+                        <tr class="financial-summary">
+                            <td class="label" colspan="4">تخفیف</td>
+                            <td class="value ltr-text">-{{ order.discount_amount|floatformat:"0"|intcomma:False }}</td>
+                        </tr>
+                        {% endif %}
+                        {% if order.shipping_cost > 0 %} {# نمایش فقط اگر هزینه ارسال وجود دارد #}
+                        <tr class="financial-summary">
+                            <td class="label" colspan="4">هزینه ارسال</td>
+                            <td class="value ltr-text">{{ order.shipping_cost|floatformat:"0"|intcomma:False }}</td>
+                        </tr>
+                        {% endif %}
+                        <tr class="grand-total">
+                            <td class="label" colspan="4">مبلغ نهایی قابل پرداخت (تومان)</td>
+                            <td class="value ltr-text">{{ order.total_price|floatformat:"0"|intcomma:False }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="payment-delivery-section">
+            <div>
+                <h2>اطلاعات پرداخت و تحویل</h2>
+                {% with latest_successful_transaction=order.get_latest_successful_transaction %}
+                    <p><span class="label">روش پرداخت:</span> <span class="value">{{latest_successful_transaction.get_payment_method_display|default_if_none:"روش پرداخت نامشخص" }}</span></p>
+                    <p><span class="label">وضعیت پرداخت:</span> <span class="value">
+                        {% if latest_successful_transaction.status == "SUCCESS" %}
+                            پرداخت موفق
+                        {% elif order.status == "PENDING_PAYMENT" %}
+                            در انتظار پرداخت
+                        {% elif order.status == "PAYMENT_FAILED" or order.status == "CANCELLED" %}
+                            پرداخت ناموفق/لغو شده
+                        {% else %}
+                             پرداخت شده
+                        {% endif %}
+                        {% if latest_successful_transaction.ref_id %} (کد رهگیری: {{ latest_successful_transaction.ref_id }}){% endif %}
+                    </span></p>
+                {% endwith %}
+                {% if order.delivery_datetime_read %}
+                    <p><span class="label">تاریخ تحویل:</span> <span class="value">{{ order.delivery_datetime_read }}</span></p>
+                {% elif order.delivery_datetime %}
+                     <p><span class="label">تاریخ تحویل:</span> <span class="value">{{ order.delivery_datetime|date:"Y/m/d - H:i" }}</span></p>
+                {% endif %}
+                <p><span class="label">روش تحویل:</span> <span class="value">{{ order.get_shipping_method_display|default:order.shipping_method|default_if_none:"-" }}</span></p>
+            </div>
+            
+            {% if order.notes_read or order.notes %}
+            <div class="notes-box">
+                <h2>یادداشت‌ها</h2>
+                {% if order.notes_read or order.notes %}
+                <div>
+                    <p class="label">یادداشت مشتری:</p>
+                    <p class="customer-note">{{ order.notes_read|default:order.notes|default:"-" }}</p>
+                </div>
+                {% endif %}
+                {# می‌توانید یادداشت‌های داخلی ادمین را هم اینجا اضافه کنید اگر لازم است #}
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="footer">
+            <p>با تشکر از اعتماد شما به {{ shop_name|default:"BAKEJÖY" }}</p>
+            <p>{{ shop_website|default:"www.bakejoy.com" }}</p>
+        </div>
+    </div>
+</body>
+</html>

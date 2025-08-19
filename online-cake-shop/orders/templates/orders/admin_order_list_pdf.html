@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>لیست سفارشات</title>
+    <style>
+        @font-face {
+            font-family: 'Vazirmatn'; /* یا هر فونت فارسی دیگری که دارید */
+            src: url('/static/fonts/Vazirmatn-Regular.ttf'); /* مسیر صحیح به فایل فونت شما */
+            /* می‌توانید فرمت‌های مختلف فونت را هم اضافه کنید (woff, woff2) */
+        }
+        body {
+            font-family: 'Vazirmatn', Arial, sans-serif;
+            font-size: 10pt;
+            direction: rtl;
+            text-align: right;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 6px 8px;
+            text-align: right;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        /* می‌توانید استایل‌های بیشتری برای هدر، فوتر، شکستن صفحه و ... اضافه کنید */
+        @page {
+            size: A4 landscape; /* یا portrait */
+            margin: 1cm;
+            /* @bottom-center { content: "صفحه " counter(page) " از " counter(pages); } */
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>گزارش لیست سفارشات</h1>
+        <p>تاریخ گزارش: {% now "Y/m/d H:i" %}</p>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>ID سفارش</th>
+                <th>مشتری</th>
+                <th>تاریخ ایجاد</th>
+                <th>مبلغ کل (تومان)</th>
+                <th>وضعیت سفارش</th>
+                <th>وضعیت پرداخت</th> 
+                </tr>
+        </thead>
+        <tbody>
+            {% for order in orders %}
+            <tr>
+                <td>#{{ order.id }}</td>
+                <td>{{ order.user.username|default:"N/A" }}</td>
+                <td>{{ order.created_at|date:"Y/m/d H:i" }}</td>
+                <td>{{ order.total_price }}</td>
+                <td>{{ order.get_status_display }}</td>
+                <td>
+                    {# منطق نمایش وضعیت پرداخت شما در اینجا #}
+                    {# برای مثال ساده: #}
+                    {% if order.transactions.all %}
+                        {% for tx in order.transactions.all %}
+                            {% if tx.status == "SUCCESS" %}موفق{% elif forloop.last %}ناموفق/منتظر{% endif %}
+                        {% empty %}
+                            نامشخص
+                        {% endfor %}
+                    {% else %}
+                        {% if order.status == "PENDING_PAYMENT" %}در انتظار پرداخت{% else %}نامشخص{% endif %}
+                    {% endif %}
+                </td>
+                </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" style="text-align:center;">هیچ سفارشی برای نمایش وجود ندارد.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>
