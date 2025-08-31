@@ -84,7 +84,7 @@ npm run dev
 ```
 
 
-![نمونه رابط کاربری](public/screencapture-localhost-5173-2025-08-16-04_43_12.png)
-![نمونه رابط کاربری](public/screencapture-localhost-5173-admin-2025-08-16-04_43_32.png)
-![نمونه رابط کاربری](public/screencapture-localhost-5173-admin-orders-2025-08-16-04_43_49.png)
-![نمونه رابط کاربری](public/screencapture-localhost-5173-profile-2025-08-16-04_44_13.png)
+![صفحه اصلی](public/screenshot-home.png)
+![پنل ادمین](public/screenshot-admin.png)
+![سفارش‌ها](public/screenshot-orders.png)
+![پروفایل](public/screenshot-profile.png)
